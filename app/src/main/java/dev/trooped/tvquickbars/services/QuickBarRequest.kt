@@ -8,6 +8,8 @@ object QuickBarRequest {
     const val EXTRA_ID = "QUICKBAR_ID"
     const val EXTRA_NAME = "QUICKBAR_NAME"
 
+    internal const val EXTRA_RESULT = "dev.trooped.tvquickbars.LAUNCH_RESULT"
+
     fun resolve(bars: List<QuickBar>, id: String?, name: String?): QuickBar? {
         if ((id != null) == (name != null)) return null
         if (id != null && id.isBlank() || name != null && name.isBlank()) return null

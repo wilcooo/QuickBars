@@ -45,6 +45,7 @@ import dev.trooped.tvquickbars.persistence.SecurePrefsManager
 import dev.trooped.tvquickbars.persistence.TriggerKeyManager
 import dev.trooped.tvquickbars.ui.QuickBar.overlay.AnimatedQuickBar
 import dev.trooped.tvquickbars.ui.EntityIconMapper
+import dev.trooped.tvquickbars.utils.QuickBarDiagnostics
 import dev.trooped.tvquickbars.utils.DemoModeManager
 import dev.trooped.tvquickbars.utils.EntityActionExecutor
 import dev.trooped.tvquickbars.utils.EntityStateKeys
@@ -75,6 +76,7 @@ class QuickBarController(
     private val onOverlayClosed: (() -> Unit)? = null
 ) : ContextWrapper(context), HomeAssistantListener {
     private var initialized = false
+    private var reloadReceiverRegistered = false
     private var destroyed = false
     private var closingOverlay = false
     private var pendingBar: QuickBar? = null
@@ -435,6 +437,7 @@ class QuickBarController(
             IntentFilter("ACTION_RELOAD_TRIGGER_KEYS"),
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
+        reloadReceiverRegistered = true
 
 
         val entityActionFilter = IntentFilter("dev.trooped.tvquickbars.ENTITY_ACTION")
@@ -1403,6 +1406,11 @@ class QuickBarController(
             }.apply { addView(composeView) }
         } else composeView
 
+        // Compose resolves its window recomposer from the OUTERMOST view. Install
+        // owners on the wrapper before attachment, as well as on the Compose child.
+        quickBarLifecycleOwner.attachToView(rootView)
+        quickBarLifecycleOwner.attachToView(composeView)
+
         // Keep refs
         overlayView = rootView
         this.composeView = composeView
@@ -1440,15 +1448,17 @@ class QuickBarController(
                     return
                 }
 
-                // Lifecycle is safe to attach/resume now
-                quickBarLifecycleOwner.attachToView(composeView)
                 quickBarLifecycleOwner.resume()
+                QuickBarDiagnostics.record(this@QuickBarController, "Overlay window attached")
 
                 // Ensure initial state is false for enter animation
                 isOverlayVisible.value = false
 
                 // Now set content (surface + lifecycle are ready)
                 composeView.setContent {
+                    androidx.compose.runtime.LaunchedEffect(Unit) {
+                        QuickBarDiagnostics.record(this@QuickBarController, "Overlay content composed")
+                    }
                     AnimatedQuickBar(
                         isVisible = isOverlayVisible.value,
                         bar = bar,
@@ -1514,6 +1524,8 @@ class QuickBarController(
             windowManager.addView(rootView, params)
         } catch (t: Throwable) {
             Log.e("QuickBarService", "addView failed", t)
+            QuickBarDiagnostics.failure(this, "Adding overlay window", t)
+            showToast(getString(R.string.external_quickbar_failed))
             overlayView = null
             this.composeView = null
             currentBarId = null
@@ -1813,7 +1825,10 @@ class QuickBarController(
         }
         overlayView = null
         composeView = null
-        if (initialized) unregisterReceiver(reloadReceiver)
+        if (reloadReceiverRegistered) {
+            unregisterReceiver(reloadReceiver)
+            reloadReceiverRegistered = false
+        }
         if (!BackgroundHaConnectionManager.isRunning()) {
             haClient?.disconnect()
         }
