@@ -13,6 +13,7 @@
     <!-- Foreground Service baseline + Android 14+ FGS type -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <!-- So we can auto-start after reboot if the user enables the toggle -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -62,6 +63,22 @@
         <activity
             android:name="dev.trooped.tvquickbars.ui.ComposeMainActivity"
             android:exported="true"/>
+        <activity
+            android:name=".ui.OpenQuickBarActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:taskAffinity="${applicationId}.external"
+            android:label="@string/external_quickbar_choose"
+            android:theme="@style/Theme.HAQuickBars.External">
+            <intent-filter>
+                <action android:name="android.intent.action.CREATE_SHORTCUT" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="dev.trooped.tvquickbars.OPEN_QUICKBAR" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
         <activity
             android:name=".ui.OnboardingActivity"
             android:exported="false" />
@@ -119,6 +136,15 @@
 
 
         <!-- Always-on HA connection (small, persistent foreground notification) -->
+        <service
+            android:name=".services.QuickBarOverlayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-requested interactive Home Assistant overlay; stops when the QuickBar closes" />
+        </service>
+
         <service
             android:name=".services.HAConnectionService"
             android:exported="false"
