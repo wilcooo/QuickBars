@@ -41,6 +41,7 @@ android {
     buildTypes {
         getByName("debug") {
             applicationIdSuffix = ".debug"
+            versionNameSuffix = "-external.2"
         }
         getByName("release") {
             isMinifyEnabled = true
@@ -69,10 +70,14 @@ android {
         compose = true
         buildConfig = true
     }
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
 }
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.16.1")
     implementation(libs.androidx.navigation.runtime.android)
     val composeBom = platform("androidx.compose:compose-bom:2025.09.01")
     implementation(composeBom)
