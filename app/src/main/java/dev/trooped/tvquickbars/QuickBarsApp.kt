@@ -38,6 +38,7 @@ class QuickBarsApp : Application(), Application.ActivityLifecycleCallbacks {
      */
     override fun onCreate() {
         super.onCreate()
+        dev.trooped.tvquickbars.utils.QuickBarDiagnostics.installCrashRecorder(this)
         instance = this
 
         AppPrefs.ensureShowToastOnEntityTriggerDefault(this)
