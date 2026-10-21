@@ -5,6 +5,48 @@ opening a saved QuickBar without enabling QuickBars' accessibility service.
 It is based on upstream commit `1478854aa5fa89831e9e7a1b4f8af4e61f031c74`
 (version 1.3.3, versionCode 25). No upstream changes or pull request were submitted.
 
+## Update 2: Mi Box crash fix and diagnostics
+
+The updated debug APK identifies itself as **1.3.3-external.2**. Install it over
+our previous debug APK; do **not** uninstall that copy. It retains the same
+package, signing identity, saved configuration, and shortcut activity/action,
+so the existing Button Mapper shortcut should continue to work.
+
+The original external overlay could crash asynchronously during its first view
+traversal with `IllegalStateException: ViewTreeLifecycleOwner not found`.
+Compose looks for the window lifecycle on the outermost view, while the first
+patch installed it only on the Compose child inside the new Back-key wrapper.
+The fix installs lifecycle/saved-state owners on both views before attachment.
+A Robolectric Android runtime regression test reproduced that exact exception
+before the fix and renders the overlay after it.
+
+To test directly on the TV:
+
+1. Open **QuickBars** in the custom app and select **Show QuickBar** beside an
+   enabled saved bar. Accessibility can stay disabled throughout.
+2. If asked, grant **Display over other apps** to this custom app. Opening a bar
+   does not require having opened it via accessibility first.
+3. Press **Back** to close it, then try the existing Button Mapper assignment,
+   including from the launcher or another app.
+4. If it still fails, reopen the custom app and select **Diagnostics** at the
+   bottom of the QuickBars list. Select **QR code**, scan it with your phone,
+   and send the resulting text. A photo of the diagnostic screen also works.
+   Use **Copy report** or **Save report** for the full stack trace if convenient;
+   Save requires an Android document picker, which some TVs do not provide.
+
+Diagnostics retain the last uncaught exception across app restarts and a bounded
+list of startup stages. They include device/Android version, build version,
+overlay permission and service status. The recorder is active only in debug
+builds and stores the report locally. It never reads HA credentials or entity
+states, and redacts URLs, bearer tokens and long opaque values from exceptions.
+Nothing is automatically uploaded; review the report before sharing it.
+
+The launch activity now waits for the overlay service to acknowledge startup
+before finishing. Invalid selections, missing permission, and synchronous
+startup failures show an on-screen dialog with access to Diagnostics instead
+of relying only on a brief toast. An absent acknowledgement times out after
+10 seconds. The foreground notification uses a dedicated monochrome icon.
+
 ## Findings in upstream
 
 - `app/src/main/AndroidManifest.xml` exposes the launcher and main activities, but
@@ -128,7 +170,7 @@ validated with it. The patch does not bypass entitlements or change limits.
 | Name selector | String extra `QUICKBAR_NAME` |
 
 Supply **exactly one** selector. Names are exact and case-sensitive. Missing,
-blank, nonexistent, disabled or ambiguous selectors are rejected with a toast.
+blank, nonexistent, disabled or ambiguous selectors are rejected with an on-screen message.
 Duplicate names are rejected even if only one of the duplicates is enabled;
 use an ID instead. Names and HA trigger aliases are different fields.
 Any app allowed by Android to launch the activity can request a configured bar;
@@ -174,7 +216,7 @@ adb shell dumpsys window windows
 
 # Inspect permission and relevant runtime errors if needed.
 adb shell appops get dev.trooped.tvquickbars.debug SYSTEM_ALERT_WINDOW
-adb logcat -s OpenQuickBar QuickBarService AndroidRuntime
+adb logcat -s QuickBarDiagnostics QuickBarService AndroidRuntime
 ```
 
 After the closing animation (about 370 ms), `QuickBarOverlayService` should no
@@ -205,6 +247,9 @@ bash gradlew :app:assembleDebug :app:testDebugUnitTest \
 The debug APK is `app/build/outputs/apk/debug/app-debug.apk`.
 The selector tests cover ID/name selection, missing/conflicting/blank selectors,
 disabled bars, duplicate names, case sensitivity, and renaming with a stable ID.
+Runtime regression tests additionally exercise overlay attachment/composition without
+accessibility, repeated opens, Back cleanup, cold service startup/acknowledgement,
+permission rejection, and diagnostic redaction.
 See `VALIDATION.txt` in the delivery bundle for the actual results of this run.
 
 The signed debug APK has a local debug signing identity, not the upstream key.
