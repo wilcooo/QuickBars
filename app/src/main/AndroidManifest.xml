@@ -63,6 +63,7 @@
         <activity
             android:name="dev.trooped.tvquickbars.ui.ComposeMainActivity"
             android:exported="true"/>
+        <activity android:name=".ui.QuickBarDiagnosticsActivity" android:exported="false" />
         <activity
             android:name=".ui.OpenQuickBarActivity"
             android:exported="true"
