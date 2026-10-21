@@ -1,4 +1,12 @@
 <resources>
+    <string name="external_quickbar_choose">Open a QuickBar</string>
+    <string name="external_quickbar_empty">Create and enable a QuickBar first.</string>
+    <string name="external_quickbar_not_found">QuickBar not found, disabled, or selector ambiguous. Use one ID or a unique exact name.</string>
+    <string name="external_quickbar_permission">Allow QuickBars to display over other apps first.</string>
+    <string name="external_quickbar_failed">Could not open QuickBar. Check the system log.</string>
+    <string name="external_quickbar_channel">QuickBar overlay</string>
+    <string name="external_quickbar_active">QuickBar is open</string>
+    <string name="external_quickbar_close">Close</string>
     <!-- General & App Titles -->
     <string name="app_name_full">QuickBars for Home Assistant</string>
     <string name="app_name_short">QuickBars</string>
