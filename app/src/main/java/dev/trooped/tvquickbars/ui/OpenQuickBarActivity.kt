@@ -3,9 +3,14 @@ package dev.trooped.tvquickbars.ui
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import android.os.ResultReceiver
 import android.os.Bundle
 import android.provider.Settings
-import android.util.Log
+import dev.trooped.tvquickbars.utils.QuickBarDiagnostics
+import dev.trooped.tvquickbars.utils.PermissionUtils
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 import dev.trooped.tvquickbars.R
@@ -17,6 +22,35 @@ import dev.trooped.tvquickbars.services.QuickBarService
 /** Shortcut picker and brief, translucent entry point for cold overlay launches. */
 class OpenQuickBarActivity : Activity() {
     private var handled = false
+    private val handler = Handler(Looper.getMainLooper())
+    private val timeout = Runnable {
+        QuickBarDiagnostics.record(this, "Launch timed out waiting for overlay service")
+        showFailure(R.string.external_quickbar_timeout)
+    }
+
+    override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
+        super.onDestroy()
+    }
+
+    private fun showFailure(message: Int, permission: Boolean = false) {
+        handler.removeCallbacks(timeout)
+        if (isFinishing || isDestroyed) return
+        val dialog = AlertDialog.Builder(this)
+            .setMessage(message)
+            .setNegativeButton(android.R.string.cancel) { _, _ -> finish() }
+            .setNeutralButton(R.string.external_diagnostics_button) { _, _ ->
+                startActivity(Intent(this, QuickBarDiagnosticsActivity::class.java))
+                finish()
+            }
+            .setOnCancelListener { finish() }
+        if (permission) dialog.setPositiveButton(R.string.go_to_settings) { _, _ ->
+            PermissionUtils.navigateToOverlaySettings(this)
+            finish()
+        }
+        else dialog.setPositiveButton(android.R.string.ok) { _, _ -> finish() }
+        dialog.show()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -35,35 +69,56 @@ class OpenQuickBarActivity : Activity() {
             try {
                 openQuickBar()
             } catch (e: RuntimeException) {
-                Log.e("OpenQuickBar", "Could not open QuickBar", e)
-                Toast.makeText(this, R.string.external_quickbar_failed, Toast.LENGTH_LONG).show()
-            } finally {
-                finish()
+                QuickBarDiagnostics.failure(this, "Launch activity", e)
+                showFailure(R.string.external_quickbar_failed)
             }
         }
     }
 
     private fun openQuickBar() {
-        if (intent.action != QuickBarRequest.ACTION_OPEN) return
+        if (intent.action != QuickBarRequest.ACTION_OPEN) { finish(); return }
+        QuickBarDiagnostics.record(this, "Open requested; overlay permission=${Settings.canDrawOverlays(this)}")
         val bar = QuickBarRequest.resolve(QuickBarManager(this).loadQuickBars(),
             intent.getStringExtra(QuickBarRequest.EXTRA_ID),
             intent.getStringExtra(QuickBarRequest.EXTRA_NAME))
         if (bar == null) {
-            Toast.makeText(this, R.string.external_quickbar_not_found, Toast.LENGTH_LONG).show()
+            QuickBarDiagnostics.record(this, "Selector did not match one enabled QuickBar")
+            showFailure(R.string.external_quickbar_not_found)
             return
         }
         if (!Settings.canDrawOverlays(this)) {
-            Toast.makeText(this, R.string.external_quickbar_permission, Toast.LENGTH_LONG).show()
+            showFailure(R.string.external_quickbar_permission, permission = true)
             return
         }
         if (QuickBarService.isRunning) {
+            QuickBarDiagnostics.record(this, "Using bound accessibility host")
             QuickBarService.serviceInstance?.openQuickBar(bar)
+            finish()
         } else {
+            QuickBarDiagnostics.record(this, "Starting on-demand overlay service")
+            handler.postDelayed(timeout, 10_000)
+            val result = object : ResultReceiver(handler) {
+                override fun onReceiveResult(resultCode: Int, resultData: Bundle?) {
+                    handler.removeCallbacks(timeout)
+                    if (isFinishing || isDestroyed) return
+                    if (resultCode == Activity.RESULT_OK) finish()
+                    else showFailure(R.string.external_quickbar_failed)
+                }
+            }
             ContextCompat.startForegroundService(this,
                 Intent(this, QuickBarOverlayService::class.java)
                     .setAction(QuickBarRequest.ACTION_OPEN)
-                    .putExtra(QuickBarRequest.EXTRA_ID, bar.id))
+                    .putExtra(QuickBarRequest.EXTRA_ID, bar.id)
+                    .putExtra(QuickBarRequest.EXTRA_RESULT, result))
         }
+    }
+
+    companion object {
+        fun createOpenIntent(context: Context, id: String) =
+            Intent(context, OpenQuickBarActivity::class.java)
+                .setAction(QuickBarRequest.ACTION_OPEN)
+                .putExtra(QuickBarRequest.EXTRA_ID, id)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
     }
 
     @Suppress("DEPRECATION")
@@ -78,10 +133,7 @@ class OpenQuickBarActivity : Activity() {
             .setTitle(R.string.external_quickbar_choose)
             .setItems(bars.map { it.name }.toTypedArray()) { _, index ->
                 val bar = bars[index]
-                val launch = Intent(this, OpenQuickBarActivity::class.java)
-                    .setAction(QuickBarRequest.ACTION_OPEN)
-                    .putExtra(QuickBarRequest.EXTRA_ID, bar.id)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+                val launch = createOpenIntent(this, bar.id)
                 setResult(RESULT_OK, Intent()
                     .putExtra(Intent.EXTRA_SHORTCUT_INTENT, launch)
                     .putExtra(Intent.EXTRA_SHORTCUT_NAME, bar.name)

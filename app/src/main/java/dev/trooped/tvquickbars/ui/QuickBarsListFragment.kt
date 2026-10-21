@@ -78,7 +78,13 @@ class QuickBarsListFragment : Fragment() {
         updatePermissionBanner(bannerContainer)
 
         // Create and set the adapter with improved click handling
-        adapter = QuickBarListAdapter(quickBarsList) { quickBar ->
+        view.findViewById<View>(R.id.quickbar_diagnostics).apply {
+            visibility = if (dev.trooped.tvquickbars.BuildConfig.DEBUG) View.VISIBLE else View.GONE
+            setOnClickListener { startActivity(Intent(requireContext(), QuickBarDiagnosticsActivity::class.java)) }
+        }
+        adapter = QuickBarListAdapter(quickBarsList, onShowClicked = { bar ->
+            startActivity(OpenQuickBarActivity.createOpenIntent(requireContext(), bar.id))
+        }) { quickBar ->
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
                 !PermissionUtils.canDrawOverlays(requireContext()) &&
                 !PermissionUtils.hasExplainedOverlayPermission(requireContext())) {
