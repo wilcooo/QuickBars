@@ -20,6 +20,7 @@ import dev.trooped.tvquickbars.persistence.QuickBarManager
  */
 class QuickBarListAdapter(
     private val quickBars: List<QuickBar>,
+    private val onShowClicked: (QuickBar) -> Unit,
     // This is a lambda function that will be called when a row is clicked
     private val onItemClicked: (QuickBar) -> Unit
 ) : RecyclerView.Adapter<QuickBarListAdapter.QuickBarViewHolder>() {
@@ -29,6 +30,7 @@ class QuickBarListAdapter(
      */
     class QuickBarViewHolder(view: View) : RecyclerView.ViewHolder(view) {
         // Holds the TextView that will display the name of the QuickBar.
+        val showButton: View = view.findViewById(R.id.quickbar_show)
         val nameTextView: TextView = view.findViewById(R.id.quickbar_name)
         val entitiesCountTextView: TextView = view.findViewById(R.id.quickbar_entities_count)
     }
@@ -76,6 +78,8 @@ class QuickBarListAdapter(
             holder.itemView.background = null
         }
 
+        holder.showButton.isEnabled = quickBar.isEnabled
+        holder.showButton.setOnClickListener { onShowClicked(quickBar) }
         holder.itemView.setOnClickListener {
             onItemClicked(quickBar)
         }
