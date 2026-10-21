@@ -202,4 +202,18 @@
     <string name="common_close">Close</string>
 
 
+
+    <string name="external_quickbar_show">Show QuickBar</string>
+    <string name="external_diagnostics_title">QuickBars diagnostics</string>
+    <string name="external_diagnostics_button">Diagnostics</string>
+    <string name="external_diagnostics_refresh">Refresh</string>
+    <string name="external_diagnostics_qr">QR code</string>
+    <string name="external_diagnostics_copy">Copy report</string>
+    <string name="external_diagnostics_copied">Report copied</string>
+    <string name="external_diagnostics_save">Save report</string>
+    <string name="external_diagnostics_qr_help">Scan with your phone to read the diagnostic report</string>
+    <string name="external_diagnostics_qr_failed">Could not create QR code. Try Copy report or Save report.</string>
+    <string name="external_diagnostics_saved">Report saved</string>
+    <string name="external_diagnostics_save_failed">Could not save report</string>
+    <string name="external_quickbar_timeout">QuickBar startup did not respond. Open Diagnostics for details.</string>
 </resources>
