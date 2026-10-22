@@ -70,6 +70,7 @@ It provides a fast, dynamic overlay that works over any app on your TV, ensuring
 ### Key Capabilities:
 - **Fast Overlays**: Control entities via remote-accessible sidebars.
 - **Key Mapping**: Map physical remote keys (single/double/long press) to HA actions.
+- **Android Shortcuts**: [Open a chosen QuickBar](docs/EXTERNAL-QUICKBARS.md) from a launcher or another app without enabling QuickBars' accessibility service.
 - **Real-time Updates**: Local connection via Home Assistant WebSocket API.
 - **Camera PiPs**: Camera PiP overlay for live viewing while you're watching TV.
 - **Rich Notifications**: TV-optimized alerts with images and action buttons.
