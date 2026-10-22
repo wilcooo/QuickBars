@@ -3,6 +3,7 @@ package dev.trooped.tvquickbars.services
 import android.accessibilityservice.AccessibilityService
 import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.SharedPreferences
@@ -19,6 +20,7 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
+import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.annotation.MainThread
 import androidx.annotation.RequiresApi
@@ -69,14 +71,71 @@ import dev.trooped.tvquickbars.data.TriggerKey
 import dev.trooped.tvquickbars.notification.NotificationController
 import dev.trooped.tvquickbars.notification.NotificationSpec
 
+/** System-bound host for the existing remote key mappings. */
+class QuickBarService : AccessibilityService() {
+    private val controller by lazy { QuickBarController(this) }
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        QuickBarOverlayService.instance?.finishSession()
+        controller.initialize()
+        accessibilityService = this
+        isRunning = true
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Editors send reload commands even when accessibility is disabled.
+        // They must not leave an unbound accessibility service running idle.
+        if (!isRunning) {
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        controller.handleCommand(intent)
+        return START_STICKY
+    }
+
+    override fun onKeyEvent(event: KeyEvent?): Boolean = controller.onKeyEvent(event)
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+    override fun onInterrupt() {}
+
+    override fun onUnbind(intent: Intent?): Boolean {
+        isRunning = false
+        Log.w("QuickBarService", "Service unbound (onUnbind)")
+        return super.onUnbind(intent)
+    }
+
+    override fun onDestroy() {
+        isRunning = false
+        if (accessibilityService === this) accessibilityService = null
+        controller.destroy()
+        super.onDestroy()
+    }
+
+    companion object {
+        @Volatile
+        var isRunning = false
+
+        @Volatile
+        private var accessibilityService: QuickBarService? = null
+        internal val serviceInstance: QuickBarController?
+            get() = accessibilityService?.controller ?: QuickBarOverlayService.instance?.controller
+
+        const val ACTION_SHOW_CAMERA_PIP = "dev.trooped.tvquickbars.SHOW_CAMERA_PIP"
+        const val EXTRA_CAMERA_SPEC = "CAMERA_SPEC"
+
+        fun handleNotificationFromHa(spec: NotificationSpec) {
+            serviceInstance?.handleNotificationFromHa(spec)
+                ?: Log.w("QuickBarService", "Service not running; notification ignored")
+        }
+    }
+}
+
 /**
- * QuickBarService Class
- * An AccessibilityService responsible for intercepting hardware key events to trigger Home Assistant
- * actions, display interactive overlays, or manage secondary UI elements like Camera PiP.
+ * Shared runtime for QuickBars, Home Assistant actions, notifications, and Camera PiP.
+ * The accessibility host forwards global key events; the on-demand host only handles
+ * keys delivered to its focused overlay window.
  *
- * This is the most important module in the project.
- *
- * This service operates in the following modes:
+ * This controller operates in the following modes:
  *
  * 1. **Normal Operation (Event Remapping):** Listens for configured trigger keys.
  *    Supports Single, Double, and Long press gestures to either:
@@ -86,7 +145,7 @@ import dev.trooped.tvquickbars.notification.NotificationSpec
  * 2. **Key Capture Mode:** Used during the setup process to bind a physical remote button
  *    to a specific action by capturing the next valid key code.
  *
- * 3. **Overlay Interaction:** When a QuickBar is visible, this service manages focus,
+ * 3. **Overlay Interaction:** When a QuickBar is visible, this controller manages focus,
  *    consumes navigation keys (D-pad), and implements an auto-hide timer that resets
  *    on user activity.
  *
@@ -104,6 +163,7 @@ import dev.trooped.tvquickbars.notification.NotificationSpec
  *    connection, disconnecting after a period of inactivity ([disconnectDelayMs]) to
  *    save system resources.
  *
+ * @property onOverlayClosed Called when an on-demand overlay session has ended.
  * @property serviceScope Main-thread scope for UI-related coroutine work.
  * @property quickBarManager Handles persistence and loading of QuickBar configurations.
  * @property windowManager System service used to attach/detach overlay windows.
@@ -115,7 +175,15 @@ import dev.trooped.tvquickbars.notification.NotificationSpec
  * @property triggerKeyManager Manages the mapping of hardware key codes to specific actions.
  * @property haClient The active connection to Home Assistant.
  */
-class QuickBarService : AccessibilityService(), HomeAssistantListener {
+internal class QuickBarController(
+    context: Context,
+    private val onOverlayClosed: (() -> Unit)? = null
+) : ContextWrapper(context), HomeAssistantListener {
+    private var initialized = false
+    private var reloadReceiverRegistered = false
+    private var destroyed = false
+    private var closingOverlay = false
+    private var pendingBar: QuickBar? = null
 
     // ───── Coroutines / lifetime ───────────────────────────────────────────────────
 
@@ -366,7 +434,7 @@ class QuickBarService : AccessibilityService(), HomeAssistantListener {
             if (intent?.action == "ACTION_RELOAD_TRIGGER_KEYS") {
                 val force = intent.getBooleanExtra("FORCE_FULL_RELOAD", false)
                 if (force) {
-                    triggerKeyManager = TriggerKeyManager(this@QuickBarService)
+                    triggerKeyManager = TriggerKeyManager(this@QuickBarController)
                 } else {
                     triggerKeyManager.clearCache()
                 }
@@ -377,30 +445,8 @@ class QuickBarService : AccessibilityService(), HomeAssistantListener {
     }
 
 
-    companion object {
-        @Volatile
-        var isRunning = false
-
-        const val ACTION_SHOW_CAMERA_PIP = "dev.trooped.tvquickbars.SHOW_CAMERA_PIP"
-        const val EXTRA_CAMERA_SPEC = "CAMERA_SPEC"
-
-        fun handleNotificationFromHa(spec: NotificationSpec) {
-            serviceInstance?.runOnMain {
-                serviceInstance?.notifications?.enqueue(spec)
-            } ?: Log.w("QuickBarService", "Service not running; notification ignored")
-        }
-
-        // reference to running service (set in onServiceConnected / cleared onDestroy)
-        @Volatile internal var serviceInstance: QuickBarService? = null
-    }
-
-    /**
-     * Called when the service is started.
-     * @param intent The intent that started the service.
-     * @param flags Additional data about the start request.
-     * @param startId A unique identifier for the start request.
-     */
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    /** Existing editor commands forwarded by the accessibility host. */
+    fun handleCommand(intent: Intent?) {
         if (!::quickBarManager.isInitialized) {
             quickBarManager = QuickBarManager(this)
         }
@@ -439,16 +485,15 @@ class QuickBarService : AccessibilityService(), HomeAssistantListener {
                     .associateBy { it.id }
             }
         }
-        return START_STICKY
     }
 
-    /**
-     * Called when the service is connected to the system.
-     */
-    override fun onServiceConnected() {
-        super.onServiceConnected()
-        isRunning = true
-        serviceInstance = this
+    fun handleNotificationFromHa(spec: NotificationSpec) = runOnMain {
+        if (initialized && !destroyed) notifications.enqueue(spec)
+    }
+
+    fun initialize() {
+        if (initialized) return
+        initialized = true
         if (!quickBarLifecycleCreated) {
             quickBarLifecycleOwner.create()
             quickBarLifecycleCreated = true
@@ -496,6 +541,7 @@ class QuickBarService : AccessibilityService(), HomeAssistantListener {
             IntentFilter("ACTION_RELOAD_TRIGGER_KEYS"),
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
+        reloadReceiverRegistered = true
 
 
         val entityActionFilter = IntentFilter("dev.trooped.tvquickbars.ENTITY_ACTION")
@@ -511,7 +557,7 @@ class QuickBarService : AccessibilityService(), HomeAssistantListener {
     /**
      * Intercepts every remote‑key event while the service is running.
      *
-     *  • If the key is **not** one of ours → immediately return super.onKeyEvent().
+     *  • If the key is **not** one of ours → return false.
      *  • Otherwise decide (SINGLE / DOUBLE / LONG) and either
      *      – open a QuickBar overlay, or
      *      – call a Home‑Assistant service for an entity.
@@ -521,9 +567,9 @@ class QuickBarService : AccessibilityService(), HomeAssistantListener {
      * keyDownStartTimes ........ measures hold‑duration for long‑press.
      * doublePressPendingKeyCode . remembers “first tap” while we wait to see if a second arrives.
      */
-    override fun onKeyEvent(event: KeyEvent?): Boolean {
+    fun onKeyEvent(event: KeyEvent?): Boolean {
         // 0) Sanity
-        val keyCodeRaw = event?.keyCode ?: return super.onKeyEvent(event)
+        val keyCodeRaw = event?.keyCode ?: return false
         val keyCode = normalizeConfirm(keyCodeRaw)
 
         // 1) Overlay visible?
@@ -1306,17 +1352,32 @@ class QuickBarService : AccessibilityService(), HomeAssistantListener {
     }
 
 
-    /**
-     * Trigger a QuickBar by its ID.
-     * @param bar The QuickBar to trigger.
-     */
+    /** Reload saved bars so cold launches and edits never depend on the key cache. */
+    @MainThread
+    fun openQuickBar(bar: QuickBar) {
+        if (destroyed) return
+        quickBarMap = quickBarManager.loadQuickBars().associateBy { it.id }
+        if (closingOverlay) {
+            pendingBar = bar
+        } else if (overlayView != null && currentBarId == bar.id) {
+            scheduleAutoHideTimeout(bar.autoCloseDelay)
+        } else {
+            triggerQuickBar(bar)
+        }
+    }
+
     @MainThread
     private fun triggerQuickBar(bar: QuickBar) = runOnMain{
+        if (destroyed) return@runOnMain
         if (!Settings.canDrawOverlays(this)) {
             // This permission check part is correct and unchanged.
             val intent = Intent("ACTION_OVERLAY_PERMISSION_REQUIRED")
             intent.putExtra("QUICKBAR_ID", bar.id)
             LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+            return@runOnMain
+        }
+        if (closingOverlay) {
+            pendingBar = bar
             return@runOnMain
         }
         connectionErrorMessage.value = null
@@ -1435,8 +1496,27 @@ class QuickBarService : AccessibilityService(), HomeAssistantListener {
             )
         }
 
+        // Dispatch before the focused Compose child. An OnKeyListener on ComposeView
+        // would miss keys when its AndroidComposeView child owns focus.
+        val rootView = if (onOverlayClosed != null) {
+            object : FrameLayout(themedContext) {
+                override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+                    restartAutoHide(event)
+                    if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+                        return handleOverlayWhileVisible(event, event.keyCode)
+                    }
+                    return super.dispatchKeyEvent(event)
+                }
+            }.apply { addView(composeView) }
+        } else composeView
+
+        // Compose resolves its window recomposer from the OUTERMOST view. Install
+        // owners on the wrapper before attachment, as well as on the Compose child.
+        quickBarLifecycleOwner.attachToView(rootView)
+        quickBarLifecycleOwner.attachToView(composeView)
+
         // Keep refs
-        overlayView = composeView
+        overlayView = rootView
         this.composeView = composeView
 
         // Prepare initial entities BEFORE content
@@ -1464,25 +1544,14 @@ class QuickBarService : AccessibilityService(), HomeAssistantListener {
         isHorizontal = bar.position == QuickBarPosition.TOP || bar.position == QuickBarPosition.BOTTOM
         val params = createWindowParams(bar)
 
-        // Add the view first so a surface exists
-        try {
-            windowManager.addView(composeView, params)
-        } catch (t: Throwable) {
-            Log.e("QuickBarService", "addView failed", t)
-            overlayView = null
-            return
-        }
-
         // Single listener that does all the "after-attach" work
-        composeView.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+        rootView.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
             override fun onViewAttachedToWindow(v: View) {
                 if (v !== overlayView) { // stale attach from a view we're already discarding
                     v.removeOnAttachStateChangeListener(this)
                     return
                 }
 
-                // Lifecycle is safe to attach/resume now
-                quickBarLifecycleOwner.attachToView(composeView)
                 quickBarLifecycleOwner.resume()
 
                 // Ensure initial state is false for enter animation
@@ -1539,6 +1608,7 @@ class QuickBarService : AccessibilityService(), HomeAssistantListener {
 
                 // Only now flip visible + run your callback
                 Choreographer.getInstance().postFrameCallback {
+                    if (destroyed || overlayView !== rootView || closingOverlay) return@postFrameCallback
                     isOverlayVisible.value = true
                     scheduleAutoHideTimeout(bar.autoCloseDelay)
                     onVisible()
@@ -1549,6 +1619,19 @@ class QuickBarService : AccessibilityService(), HomeAssistantListener {
 
             override fun onViewDetachedFromWindow(v: View) { /* no-op */ }
         })
+        // Register the listener before attaching, including synchronous attachment.
+        try {
+            windowManager.addView(rootView, params)
+        } catch (t: Throwable) {
+            Log.e("QuickBarService", "addView failed", t)
+            showToast(getString(R.string.external_quickbar_failed))
+            overlayView = null
+            this.composeView = null
+            currentBarId = null
+            onOverlayClosed?.invoke()
+            return
+        }
+
     }
 
     /**
@@ -1612,6 +1695,8 @@ class QuickBarService : AccessibilityService(), HomeAssistantListener {
 
         runOnMain {
             val v = overlayView ?: run { onHidden?.invoke(); return@runOnMain }
+            if (closingOverlay) return@runOnMain
+            closingOverlay = true
 
             // Drive exit animation
             isOverlayVisible.value = false
@@ -1624,7 +1709,7 @@ class QuickBarService : AccessibilityService(), HomeAssistantListener {
                 connectionStateJob?.cancel(); connectionStateJob = null
                 quickBarLifecycleOwner.pause()
                 if (immediate) {
-                    (v as? ComposeView)?.setContent { } // only in immediate path
+                    composeView?.setContent { } // only in immediate path
                 }
             } catch (_: Throwable) {
             }
@@ -1649,7 +1734,14 @@ class QuickBarService : AccessibilityService(), HomeAssistantListener {
                         }
                         haClient = null
                     }
-                    onHidden?.invoke()
+                    closingOverlay = false
+                    if (!destroyed) {
+                        val next = pendingBar
+                        pendingBar = null
+                        if (next != null) showOverlay(next) { afterOverlayVisibleSetup(next) }
+                        else onHidden?.invoke()
+                        if (overlayView == null) onOverlayClosed?.invoke()
+                    }
                 }
             }
 
@@ -1819,10 +1911,26 @@ class QuickBarService : AccessibilityService(), HomeAssistantListener {
     /**
      * Called when the service is being destroyed.
      */
-    override fun onDestroy() {
-        super.onDestroy()
-        serviceInstance = null
+    fun destroy() {
+        if (destroyed) return
+        destroyed = true
+        cancelAutoHideTimeout()
+        handler.removeCallbacksAndMessages(null)
+        mainHandler.removeCallbacksAndMessages(null)
         serviceScope.cancel()
+        overlayView?.let { view ->
+            composeView?.disposeComposition()
+            try {
+                windowManager.removeViewImmediate(view)
+            } catch (_: IllegalArgumentException) {
+            }
+        }
+        overlayView = null
+        composeView = null
+        if (reloadReceiverRegistered) {
+            unregisterReceiver(reloadReceiver)
+            reloadReceiverRegistered = false
+        }
         if (!BackgroundHaConnectionManager.isRunning()) {
             haClient?.disconnect()
         }
@@ -1846,12 +1954,4 @@ class QuickBarService : AccessibilityService(), HomeAssistantListener {
         }
     }
 
-    override fun onUnbind(intent: Intent?): Boolean {
-        isRunning = false
-        Log.w("QuickBarService", "Service unbound (onUnbind)")
-        return super.onUnbind(intent)
-    }
-
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
-    override fun onInterrupt() {}
 }
