@@ -69,9 +69,14 @@ android {
         compose = true
         buildConfig = true
     }
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
 }
 
 dependencies {
+    testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
     implementation(libs.androidx.navigation.runtime.android)
     val composeBom = platform("androidx.compose:compose-bom:2025.09.01")
     implementation(composeBom)
